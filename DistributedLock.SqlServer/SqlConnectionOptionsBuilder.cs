@@ -10,10 +10,10 @@ namespace Medallion.Threading.SqlServer
     /// <summary>
     /// Specifies options for connecting to and locking against a SQL database
     /// </summary>
-    public sealed class SqlConnectionOptionsBuilder
+    public sealed class SqlConnectionOptionsBuilder : IInternalInstrumentationOptionsBuilder<SqlConnectionOptionsBuilder>
     {
         private TimeoutValue? _keepaliveCadence;
-        private bool? _useTransaction, _useMultiplexing;
+        private bool? _useTransaction, _useMultiplexing, _useInstrumentation;
 
         internal SqlConnectionOptionsBuilder() { }
 
@@ -50,6 +50,13 @@ namespace Medallion.Threading.SqlServer
             return this;
         }
 
+        /// <inheritdoc />
+        public SqlConnectionOptionsBuilder UseInstrumentation(bool useInstrumentation = true)
+        {
+            this._useInstrumentation = useInstrumentation;
+            return this;
+        }
+
         /// <summary>
         /// This mode takes advantage of the fact that while "holding" a lock (or other synchronization primitive)
         /// a connection is essentially idle. Thus, rather than creating a new connection for each held lock it is 
@@ -72,7 +79,7 @@ namespace Medallion.Threading.SqlServer
             return this;
         }
 
-        internal static (TimeoutValue keepaliveCadence, bool useTransaction, bool useMultiplexing) GetOptions(Action<SqlConnectionOptionsBuilder>? optionsBuilder)
+        internal static SqlDistributedLockOptions GetOptions(Action<SqlConnectionOptionsBuilder>? optionsBuilder)
         {
             SqlConnectionOptionsBuilder? options;
             if (optionsBuilder != null)
@@ -85,7 +92,6 @@ namespace Medallion.Threading.SqlServer
                 options = null;
             }
 
-            var keepaliveCadence = options?._keepaliveCadence ?? TimeSpan.FromMinutes(10);
             var useTransaction = options?._useTransaction ?? false;
             var useMultiplexing = options?._useMultiplexing ?? true;
 
@@ -94,7 +100,31 @@ namespace Medallion.Threading.SqlServer
                 throw new ArgumentException(nameof(UseTransaction) + ": is not compatible with " + nameof(UseMultiplexing));
             }
 
-            return (keepaliveCadence, useTransaction, useMultiplexing);
+            return new SqlDistributedLockOptions(
+                keepaliveCadence: options?._keepaliveCadence ?? TimeSpan.FromMinutes(10),
+                useTransaction: useTransaction,
+                useMultiplexing: useMultiplexing,
+                useInstrumentation: options?._useInstrumentation ?? false);
         }
+    }
+
+    internal readonly struct SqlDistributedLockOptions
+    {
+        public SqlDistributedLockOptions(
+            TimeoutValue keepaliveCadence,
+            bool useTransaction,
+            bool useMultiplexing,
+            bool useInstrumentation)
+        {
+            this.KeepaliveCadence = keepaliveCadence;
+            this.UseTransaction = useTransaction;
+            this.UseMultiplexing = useMultiplexing;
+            this.UseInstrumentation = useInstrumentation;
+        }
+
+        public TimeoutValue KeepaliveCadence { get; }
+        public bool UseTransaction { get; }
+        public bool UseMultiplexing { get; }
+        public bool UseInstrumentation { get; }
     }
 }

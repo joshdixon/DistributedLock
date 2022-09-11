@@ -19,6 +19,7 @@ namespace Medallion.Threading.SqlServer
     public sealed partial class SqlDistributedReaderWriterLock : IInternalDistributedUpgradeableReaderWriterLock<SqlDistributedReaderWriterLockHandle, SqlDistributedReaderWriterLockUpgradeableHandle>
     {
         private readonly IDbDistributedLock _internalLock;
+        private readonly SqlDistributedLockOptions _options;
 
         #region ---- Constructors ----
         /// <summary>
@@ -29,7 +30,7 @@ namespace Medallion.Threading.SqlServer
         /// Unless <paramref name="exactName"/> is specified, <paramref name="name"/> will be escaped/hashed to ensure name validity.
         /// </summary>
         public SqlDistributedReaderWriterLock(string name, string connectionString, Action<SqlConnectionOptionsBuilder>? options = null, bool exactName = false)
-            : this(name, exactName, n => SqlDistributedLock.CreateInternalLock(n, connectionString, options))
+            : this(name, exactName, (n, o) => SqlDistributedLock.CreateInternalLock(n, connectionString, o))
         {
         }
 
@@ -42,7 +43,7 @@ namespace Medallion.Threading.SqlServer
         /// Unless <paramref name="exactName"/> is specified, <paramref name="name"/> will be escaped/hashed to ensure name validity.
         /// </summary>
         public SqlDistributedReaderWriterLock(string name, IDbConnection connection, bool exactName = false)
-            : this(name, exactName, n => SqlDistributedLock.CreateInternalLock(n, connection))
+            : this(name, exactName, (n, o) => SqlDistributedLock.CreateInternalLock(n, connection))
         {
         }
 
@@ -55,11 +56,11 @@ namespace Medallion.Threading.SqlServer
         /// Unless <paramref name="exactName"/> is specified, <paramref name="name"/> will be escaped/hashed to ensure name validity.
         /// </summary>
         public SqlDistributedReaderWriterLock(string name, IDbTransaction transaction, bool exactName = false)
-            : this(name, exactName, n => SqlDistributedLock.CreateInternalLock(n, transaction))
+            : this(name, exactName, (n, o) => SqlDistributedLock.CreateInternalLock(n, transaction))
         {
         }
 
-        private SqlDistributedReaderWriterLock(string name, bool exactName, Func<string, IDbDistributedLock> internalLockFactory)
+        private SqlDistributedReaderWriterLock(string name, bool exactName, Func<string, SqlDistributedLockOptions, IDbDistributedLock> internalLockFactory, Action<SqlConnectionOptionsBuilder>? optionsBuilder = null)
         {
             if (exactName)
             {
@@ -72,7 +73,8 @@ namespace Medallion.Threading.SqlServer
                 this.Name = GetSafeName(name);
             }
 
-            this._internalLock = internalLockFactory(this.Name);
+            this._options = SqlConnectionOptionsBuilder.GetOptions(optionsBuilder);
+            this._internalLock = internalLockFactory(this.Name, this._options);
         }
         #endregion
 
@@ -88,23 +90,19 @@ namespace Medallion.Threading.SqlServer
 
         internal static string GetSafeName(string name) => SqlDistributedLock.GetSafeName(name);
 
-        async ValueTask<SqlDistributedReaderWriterLockUpgradeableHandle?> IInternalDistributedUpgradeableReaderWriterLock<SqlDistributedReaderWriterLockHandle, SqlDistributedReaderWriterLockUpgradeableHandle>.InternalTryAcquireUpgradeableReadLockAsync(
-            TimeoutValue timeout, 
-            CancellationToken cancellationToken)
-        {
-            var innerHandle = await this._internalLock
-                .TryAcquireAsync(timeout, SqlApplicationLock.UpdateLock, cancellationToken, contextHandle: null).ConfigureAwait(false);
-            return innerHandle != null ? new SqlDistributedReaderWriterLockUpgradeableHandle(innerHandle, this._internalLock) : null;
-        }
+        ValueTask<SqlDistributedReaderWriterLockUpgradeableHandle?> IInternalDistributedUpgradeableReaderWriterLock<SqlDistributedReaderWriterLockHandle, SqlDistributedReaderWriterLockUpgradeableHandle>.InternalTryAcquireUpgradeableReadLockAsync(
+            TimeoutValue timeout,
+            CancellationToken cancellationToken) =>
+            this._internalLock.TryAcquireAsync(timeout, SqlApplicationLock.UpdateLock, cancellationToken, contextHandle: null)
+                .Instrument(this._options.UseInstrumentation, @lock: this, Instrumentation.ReaderWriterLockLevel.UpgradeableRead, timeout, cancellationToken)
+                .Wrap(h => new SqlDistributedReaderWriterLockUpgradeableHandle(h, this._internalLock, this, this._options.UseInstrumentation));
 
-        async ValueTask<SqlDistributedReaderWriterLockHandle?> IInternalDistributedReaderWriterLock<SqlDistributedReaderWriterLockHandle>.InternalTryAcquireAsync(
-            TimeoutValue timeout, 
-            CancellationToken cancellationToken, 
-            bool isWrite)
-        {
-            var innerHandle = await this._internalLock
-                .TryAcquireAsync(timeout, isWrite ? SqlApplicationLock.ExclusiveLock : SqlApplicationLock.SharedLock, cancellationToken, contextHandle: null).ConfigureAwait(false);
-            return innerHandle != null ? new SqlDistributedReaderWriterLockNonUpgradeableHandle(innerHandle) : null;
-        }
+        ValueTask<SqlDistributedReaderWriterLockHandle?> IInternalDistributedReaderWriterLock<SqlDistributedReaderWriterLockHandle>.InternalTryAcquireAsync(
+            TimeoutValue timeout,
+            CancellationToken cancellationToken,
+            bool isWrite) =>
+            this._internalLock.TryAcquireAsync(timeout, isWrite ? SqlApplicationLock.ExclusiveLock : SqlApplicationLock.SharedLock, cancellationToken, contextHandle: null)
+                .Instrument(this._options.UseInstrumentation, @lock: this, isWrite ? Instrumentation.ReaderWriterLockLevel.Write : Instrumentation.ReaderWriterLockLevel.Read, timeout, cancellationToken)
+                .Wrap<SqlDistributedReaderWriterLockHandle>(h => new SqlDistributedReaderWriterLockNonUpgradeableHandle(h));
     }
 }

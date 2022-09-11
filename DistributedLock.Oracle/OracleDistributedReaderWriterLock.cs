@@ -15,6 +15,7 @@ namespace Medallion.Threading.Oracle
     public sealed partial class OracleDistributedReaderWriterLock : IInternalDistributedUpgradeableReaderWriterLock<OracleDistributedReaderWriterLockHandle, OracleDistributedReaderWriterLockUpgradeableHandle>
     {
         private readonly IDbDistributedLock _internalLock;
+        private readonly OracleDistributedLockOptions _options;
 
         /// <summary>
         /// Constructs a new lock using the provided <paramref name="name"/>. 
@@ -24,7 +25,7 @@ namespace Medallion.Threading.Oracle
         /// Unless <paramref name="exactName"/> is specified, <paramref name="name"/> will be escaped/hashed to ensure name validity.
         /// </summary>
         public OracleDistributedReaderWriterLock(string name, string connectionString, Action<OracleConnectionOptionsBuilder>? options = null, bool exactName = false)
-            : this(name, exactName, n => OracleDistributedLock.CreateInternalLock(n, connectionString, options))
+            : this(name, exactName, (n, o) => OracleDistributedLock.CreateInternalLock(n, connectionString, o), options)
         {
         }
 
@@ -37,14 +38,15 @@ namespace Medallion.Threading.Oracle
         /// Unless <paramref name="exactName"/> is specified, <paramref name="name"/> will be escaped/hashed to ensure name validity.
         /// </summary>
         public OracleDistributedReaderWriterLock(string name, IDbConnection connection, bool exactName = false)
-            : this(name, exactName, n => OracleDistributedLock.CreateInternalLock(n, connection))
+            : this(name, exactName, (n, o) => OracleDistributedLock.CreateInternalLock(n, connection))
         {
         }
 
-        private OracleDistributedReaderWriterLock(string name, bool exactName, Func<string, IDbDistributedLock> internalLockFactory)
+        private OracleDistributedReaderWriterLock(string name, bool exactName, Func<string, OracleDistributedLockOptions, IDbDistributedLock> internalLockFactory, Action<OracleConnectionOptionsBuilder>? options = null)
         {
             this.Name = OracleDistributedLock.GetName(name, exactName);
-            this._internalLock = internalLockFactory(this.Name);
+            this._options = OracleConnectionOptionsBuilder.GetOptions(options);
+            this._internalLock = internalLockFactory(this.Name, this._options);
         }
 
         /// <summary>
@@ -52,23 +54,19 @@ namespace Medallion.Threading.Oracle
         /// </summary>
         public string Name { get; }
 
-        async ValueTask<OracleDistributedReaderWriterLockUpgradeableHandle?> IInternalDistributedUpgradeableReaderWriterLock<OracleDistributedReaderWriterLockHandle, OracleDistributedReaderWriterLockUpgradeableHandle>.InternalTryAcquireUpgradeableReadLockAsync(
+        ValueTask<OracleDistributedReaderWriterLockUpgradeableHandle?> IInternalDistributedUpgradeableReaderWriterLock<OracleDistributedReaderWriterLockHandle, OracleDistributedReaderWriterLockUpgradeableHandle>.InternalTryAcquireUpgradeableReadLockAsync(
             TimeoutValue timeout,
-            CancellationToken cancellationToken)
-        {
-            var innerHandle = await this._internalLock
-                .TryAcquireAsync(timeout, OracleDbmsLock.UpdateLock, cancellationToken, contextHandle: null).ConfigureAwait(false);
-            return innerHandle != null ? new OracleDistributedReaderWriterLockUpgradeableHandle(innerHandle, this._internalLock) : null;
-        }
+            CancellationToken cancellationToken) =>
+            this._internalLock.TryAcquireAsync(timeout, OracleDbmsLock.UpdateLock, cancellationToken, contextHandle: null)
+                .Instrument(this._options.UseInstrumentation, @lock: this, Instrumentation.ReaderWriterLockLevel.UpgradeableRead, timeout, cancellationToken)
+                .Wrap(h => new OracleDistributedReaderWriterLockUpgradeableHandle(h, this._internalLock, this, this._options.UseInstrumentation));
 
-        async ValueTask<OracleDistributedReaderWriterLockHandle?> IInternalDistributedReaderWriterLock<OracleDistributedReaderWriterLockHandle>.InternalTryAcquireAsync(
+        ValueTask<OracleDistributedReaderWriterLockHandle?> IInternalDistributedReaderWriterLock<OracleDistributedReaderWriterLockHandle>.InternalTryAcquireAsync(
             TimeoutValue timeout,
             CancellationToken cancellationToken,
-            bool isWrite)
-        {
-            var innerHandle = await this._internalLock
-                .TryAcquireAsync(timeout, isWrite ? OracleDbmsLock.ExclusiveLock : OracleDbmsLock.SharedLock, cancellationToken, contextHandle: null).ConfigureAwait(false);
-            return innerHandle != null ? new OracleDistributedReaderWriterLockNonUpgradeableHandle(innerHandle) : null;
-        }
+            bool isWrite) =>
+            this._internalLock.TryAcquireAsync(timeout, isWrite ? OracleDbmsLock.ExclusiveLock : OracleDbmsLock.SharedLock, cancellationToken, contextHandle: null)
+                .Instrument(this._options.UseInstrumentation, @lock: this, isWrite ? Instrumentation.ReaderWriterLockLevel.Write : Instrumentation.ReaderWriterLockLevel.Read, timeout, cancellationToken)
+                .Wrap<OracleDistributedReaderWriterLockHandle>(h => new OracleDistributedReaderWriterLockNonUpgradeableHandle(h));
     }
 }

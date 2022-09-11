@@ -14,9 +14,9 @@ namespace Medallion.Threading.Redis
     /// </summary>
     public sealed class RedisDistributedReaderWriterLockHandle : IDistributedSynchronizationHandle
     {
-        private RedLockHandle? _innerHandle;
+        private IDistributedSynchronizationHandle? _innerHandle;
 
-        internal RedisDistributedReaderWriterLockHandle(RedLockHandle innerHandle)
+        internal RedisDistributedReaderWriterLockHandle(IDistributedSynchronizationHandle innerHandle)
         {
             this._innerHandle = innerHandle;
         }

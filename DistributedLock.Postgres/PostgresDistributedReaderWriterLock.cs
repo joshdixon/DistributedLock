@@ -16,13 +16,14 @@ namespace Medallion.Threading.Postgres
     public sealed partial class PostgresDistributedReaderWriterLock : IInternalDistributedReaderWriterLock<PostgresDistributedReaderWriterLockHandle>
     {
         private readonly IDbDistributedLock _internalLock;
+        private readonly PostgresDistributedLockOptions _options;
 
         /// <summary>
         /// Constructs a lock with the given <paramref name="key"/> (effectively the lock name), <paramref name="connectionString"/>,
         /// and <paramref name="options"/>
         /// </summary>
         public PostgresDistributedReaderWriterLock(PostgresAdvisoryLockKey key, string connectionString, Action<PostgresConnectionOptionsBuilder>? options = null)
-            : this(key, PostgresDistributedLock.CreateInternalLock(key, connectionString, options))
+            : this(key, o => PostgresDistributedLock.CreateInternalLock(key, connectionString, o), options)
         {
         }
 
@@ -30,14 +31,15 @@ namespace Medallion.Threading.Postgres
         /// Constructs a lock with the given <paramref name="key"/> (effectively the lock name) and <paramref name="connection"/>.
         /// </summary>
         public PostgresDistributedReaderWriterLock(PostgresAdvisoryLockKey key, IDbConnection connection)
-            : this(key, PostgresDistributedLock.CreateInternalLock(key, connection))
+            : this(key, o => PostgresDistributedLock.CreateInternalLock(key, connection))
         {
         }
 
-        private PostgresDistributedReaderWriterLock(PostgresAdvisoryLockKey key, IDbDistributedLock internalLock)
+        private PostgresDistributedReaderWriterLock(PostgresAdvisoryLockKey key, Func<PostgresDistributedLockOptions, IDbDistributedLock> internalLockFactory, Action<PostgresConnectionOptionsBuilder>? options = null)
         {
             this.Key = key;
-            this._internalLock = internalLock;
+            this._options = PostgresConnectionOptionsBuilder.GetOptions(options);
+            this._internalLock = internalLockFactory(this._options);
         }
 
         /// <summary>
@@ -52,6 +54,7 @@ namespace Medallion.Threading.Postgres
             CancellationToken cancellationToken,
             bool isWrite) =>
             this._internalLock.TryAcquireAsync(timeout, isWrite ? PostgresAdvisoryLock.ExclusiveLock : PostgresAdvisoryLock.SharedLock, cancellationToken, contextHandle: null)
+                .Instrument(this._options.UseInstrumentation, @lock: this, isWrite ? Instrumentation.ReaderWriterLockLevel.Write : Instrumentation.ReaderWriterLockLevel.Read, timeout, cancellationToken)
                 .Wrap(h => new PostgresDistributedReaderWriterLockHandle(h));
     }
 }

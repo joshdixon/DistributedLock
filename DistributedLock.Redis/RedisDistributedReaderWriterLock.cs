@@ -61,7 +61,7 @@ namespace Medallion.Threading.Redis
             CancellationToken cancellationToken,
             bool isWrite)
         {
-            return isWrite
+            return (isWrite
                 ? this.TryAcquireWriteLockAsync(timeout, cancellationToken)
                 : BusyWaitHelper.WaitAsync(
                     this,
@@ -70,13 +70,15 @@ namespace Medallion.Threading.Redis
                     minSleepTime: this._options.MinBusyWaitSleepTime,
                     maxSleepTime: this._options.MaxBusyWaitSleepTime,
                     cancellationToken
-                );
+                ))
+                .Instrument(this._options.UseInstrumentation, @lock: this, isWrite ? Instrumentation.ReaderWriterLockLevel.Write : Instrumentation.ReaderWriterLockLevel.Read, timeout, cancellationToken)
+                .Wrap(h => new RedisDistributedReaderWriterLockHandle(h));
         }
 
-        private async ValueTask<RedisDistributedReaderWriterLockHandle?> TryAcquireWriteLockAsync(TimeoutValue timeout, CancellationToken cancellationToken)
+        private async ValueTask<IDistributedSynchronizationHandle?> TryAcquireWriteLockAsync(TimeoutValue timeout, CancellationToken cancellationToken)
         {
             var acquireWriteLockState = new AcquireWriteLockState(canRetry: !timeout.IsZero);
-            RedisDistributedReaderWriterLockHandle? handle = null;
+            IDistributedSynchronizationHandle? handle = null;
             try
             {
                 return handle = await BusyWaitHelper.WaitAsync(
@@ -92,21 +94,21 @@ namespace Medallion.Threading.Redis
             {
                 // If we failed to take the write lock but we took the writer waiting lock, release
                 // the writer waiting lock on our way out.
-                if (handle == null && acquireWriteLockState.WriterWaiting.TryGetValue(out var writerWaiting)) 
+                if (handle == null && acquireWriteLockState.WriterWaiting.TryGetValue(out var writerWaiting))
                 {
                     await new RedLockRelease(writerWaiting.Primitive, writerWaiting.TryAcquireTasks).ReleaseAsync().ConfigureAwait(false);
                 }
             }
         }
 
-        private async ValueTask<RedisDistributedReaderWriterLockHandle?> TryAcquireWriteLockAsync(AcquireWriteLockState state, CancellationToken cancellationToken)
+        private async ValueTask<IDistributedSynchronizationHandle?> TryAcquireWriteLockAsync(AcquireWriteLockState state, CancellationToken cancellationToken)
         {
             // The first time, through, just try to acquire the write lock. This covers the TryAcquire(0) case and ensures that we 
             // don't bother with taking the writer waiting lock if we don't need to.
             if (state.IsFirstTry)
             {
                 state.IsFirstTry = false;
-                var firstTryResult =  await TryAcquireWriteLockAsync(RedLockHelper.CreateLockId()).ConfigureAwait(false);
+                var firstTryResult = await TryAcquireWriteLockAsync(RedLockHelper.CreateLockId()).ConfigureAwait(false);
                 if (firstTryResult != null) { return firstTryResult; }
                 // if we're not going to retry the acquire, don't bother attempting the writer waiting lock
                 if (!state.CanRetry) { return null; }
@@ -129,16 +131,16 @@ namespace Medallion.Threading.Redis
             // If we get here, we have the writer waiting lock. Try to "upgrade" that to an actual writer lock
             return await TryAcquireWriteLockAsync(state.WriterWaiting.Value.LockId).ConfigureAwait(false);
 
-            ValueTask<RedisDistributedReaderWriterLockHandle?> TryAcquireWriteLockAsync(RedisValue lockId) =>
+            ValueTask<IDistributedSynchronizationHandle?> TryAcquireWriteLockAsync(RedisValue lockId) =>
                 this.TryAcquireAsync(new RedisWriteLockPrimitive(this.ReaderKey, this.WriterKey, lockId, this._options.RedLockTimeouts), cancellationToken);
         }
 
-        private async ValueTask<RedisDistributedReaderWriterLockHandle?> TryAcquireAsync<TPrimitive>(TPrimitive primitive, CancellationToken cancellationToken)
+        private async ValueTask<IDistributedSynchronizationHandle?> TryAcquireAsync<TPrimitive>(TPrimitive primitive, CancellationToken cancellationToken)
             where TPrimitive : IRedLockAcquirableSynchronizationPrimitive, IRedLockExtensibleSynchronizationPrimitive
         {
             var tryAcquireTasks = await new RedLockAcquire(primitive, this._databases, cancellationToken).TryAcquireAsync().ConfigureAwait(false);
             return tryAcquireTasks != null
-                ? new RedisDistributedReaderWriterLockHandle(new RedLockHandle(primitive, tryAcquireTasks, extensionCadence: this._options.ExtensionCadence, expiry: this._options.RedLockTimeouts.Expiry))
+                ? new RedLockHandle(primitive, tryAcquireTasks, extensionCadence: this._options.ExtensionCadence, expiry: this._options.RedLockTimeouts.Expiry)
                 : null;
         }
 

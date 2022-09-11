@@ -58,14 +58,16 @@ namespace Medallion.Threading.Redis
                 minSleepTime: this._options.MinBusyWaitSleepTime,
                 maxSleepTime: this._options.MaxBusyWaitSleepTime,
                 cancellationToken: cancellationToken
-            );
+            )
+            .Instrument(this._options.UseInstrumentation, semaphore: this, timeout, cancellationToken)
+            .Wrap(h => new RedisDistributedSemaphoreHandle(h));
 
-        private async ValueTask<RedisDistributedSemaphoreHandle?> TryAcquireAsync(CancellationToken cancellationToken)
+        private async ValueTask<IDistributedSynchronizationHandle?> TryAcquireAsync(CancellationToken cancellationToken)
         {
             var primitive = new RedisSemaphorePrimitive(this.Key, this.MaxCount, this._options.RedLockTimeouts);
             var tryAcquireTasks = await new RedLockAcquire(primitive, this._databases, cancellationToken).TryAcquireAsync().ConfigureAwait(false);
             return tryAcquireTasks != null
-                ? new RedisDistributedSemaphoreHandle(new RedLockHandle(primitive, tryAcquireTasks, extensionCadence: this._options.ExtensionCadence, expiry: this._options.RedLockTimeouts.Expiry))
+                ? new RedLockHandle(primitive, tryAcquireTasks, extensionCadence: this._options.ExtensionCadence, expiry: this._options.RedLockTimeouts.Expiry)
                 : null;
         }
     }

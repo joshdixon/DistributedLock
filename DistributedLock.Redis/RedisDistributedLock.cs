@@ -18,7 +18,7 @@ namespace Medallion.Threading.Redis
     {
         private readonly IReadOnlyList<IDatabase> _databases;
         private readonly RedisDistributedLockOptions _options;
-        
+
         /// <summary>
         /// Constructs a lock named <paramref name="key"/> using the provided <paramref name="database"/> and <paramref name="options"/>.
         /// </summary>
@@ -65,14 +65,16 @@ namespace Medallion.Threading.Redis
                 minSleepTime: this._options.MinBusyWaitSleepTime,
                 maxSleepTime: this._options.MaxBusyWaitSleepTime,
                 cancellationToken: cancellationToken
-            );
+            )
+            .Instrument(this._options.UseInstrumentation, @lock: this, timeout, cancellationToken)
+            .Wrap(h => new RedisDistributedLockHandle(h));
 
-        private async ValueTask<RedisDistributedLockHandle?> TryAcquireAsync(CancellationToken cancellationToken)
+        private async ValueTask<IDistributedSynchronizationHandle?> TryAcquireAsync(CancellationToken cancellationToken)
         {
             var primitive = new RedisMutexPrimitive(this.Key, RedLockHelper.CreateLockId(), this._options.RedLockTimeouts);
             var tryAcquireTasks = await new RedLockAcquire(primitive, this._databases, cancellationToken).TryAcquireAsync().ConfigureAwait(false);
-            return tryAcquireTasks != null 
-                ? new RedisDistributedLockHandle(new RedLockHandle(primitive, tryAcquireTasks, extensionCadence: this._options.ExtensionCadence, expiry: this._options.RedLockTimeouts.Expiry)) 
+            return tryAcquireTasks != null
+                ? new RedLockHandle(primitive, tryAcquireTasks, extensionCadence: this._options.ExtensionCadence, expiry: this._options.RedLockTimeouts.Expiry)
                 : null;
         }
     }

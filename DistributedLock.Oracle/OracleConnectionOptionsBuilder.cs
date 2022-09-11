@@ -9,10 +9,11 @@ namespace Medallion.Threading.Oracle
     /// <summary>
     /// Specifies options for connecting to and locking against an Oracle database
     /// </summary>
-    public sealed class OracleConnectionOptionsBuilder
+    public sealed class OracleConnectionOptionsBuilder : IInternalInstrumentationOptionsBuilder<OracleConnectionOptionsBuilder>
     {
         private TimeoutValue? _keepaliveCadence;
         private bool? _useMultiplexing;
+        private bool? _useInstrumentation;
 
         internal OracleConnectionOptionsBuilder() { }
 
@@ -52,7 +53,14 @@ namespace Medallion.Threading.Oracle
             return this;
         }
 
-        internal static (TimeoutValue keepaliveCadence, bool useMultiplexing) GetOptions(Action<OracleConnectionOptionsBuilder>? optionsBuilder)
+        /// <inheritdoc />
+        public OracleConnectionOptionsBuilder UseInstrumentation(bool useInstrumentation = true)
+        {
+            this._useInstrumentation = useInstrumentation;
+            return this;
+        }
+
+        internal static OracleDistributedLockOptions GetOptions(Action<OracleConnectionOptionsBuilder>? optionsBuilder)
         {
             OracleConnectionOptionsBuilder? options;
             if (optionsBuilder != null)
@@ -65,10 +73,28 @@ namespace Medallion.Threading.Oracle
                 options = null;
             }
 
-            var keepaliveCadence = options?._keepaliveCadence ?? Timeout.InfiniteTimeSpan;
-            var useMultiplexing = options?._useMultiplexing ?? true;
-
-            return (keepaliveCadence, useMultiplexing);
+            return new OracleDistributedLockOptions(
+                keepaliveCadence: options?._keepaliveCadence ?? Timeout.InfiniteTimeSpan,
+                useMultiplexing: options?._useMultiplexing ?? true,
+                useInstrumentation: options?._useInstrumentation ?? false
+            );
         }
+    }
+
+    internal readonly struct OracleDistributedLockOptions
+    {
+        public OracleDistributedLockOptions(
+            TimeoutValue keepaliveCadence,
+            bool useMultiplexing,
+            bool useInstrumentation)
+        {
+            this.KeepaliveCadence = keepaliveCadence;
+            this.UseMultiplexing = useMultiplexing;
+            this.UseInstrumentation = useInstrumentation;
+        }
+
+        public TimeoutValue KeepaliveCadence { get; }
+        public bool UseMultiplexing { get; }
+        public bool UseInstrumentation { get; }
     }
 }

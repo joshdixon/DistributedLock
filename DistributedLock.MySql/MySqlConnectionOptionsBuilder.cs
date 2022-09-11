@@ -9,10 +9,11 @@ namespace Medallion.Threading.MySql
     /// <summary>
     /// Specifies options for connecting to and locking against a MySQL database
     /// </summary>
-    public sealed class MySqlConnectionOptionsBuilder
+    public sealed class MySqlConnectionOptionsBuilder : IInternalInstrumentationOptionsBuilder<MySqlConnectionOptionsBuilder>
     {
         private TimeoutValue? _keepaliveCadence;
         private bool? _useMultiplexing;
+        private bool? _useInstrumentation;
 
         internal MySqlConnectionOptionsBuilder() { }
 
@@ -54,7 +55,14 @@ namespace Medallion.Threading.MySql
             return this;
         }
 
-        internal static (TimeoutValue keepaliveCadence, bool useMultiplexing) GetOptions(Action<MySqlConnectionOptionsBuilder>? optionsBuilder)
+        /// <inheritdoc />
+        public MySqlConnectionOptionsBuilder UseInstrumentation(bool useInstrumentation = true)
+        {
+            this._useInstrumentation = useInstrumentation;
+            return this;
+        }
+
+        internal static MySqlDistributedLockOptions GetOptions(Action<MySqlConnectionOptionsBuilder>? optionsBuilder)
         {
             MySqlConnectionOptionsBuilder? options;
             if (optionsBuilder != null)
@@ -67,10 +75,28 @@ namespace Medallion.Threading.MySql
                 options = null;
             }
 
-            var keepaliveCadence = options?._keepaliveCadence ?? TimeSpan.FromHours(3.5);
-            var useMultiplexing = options?._useMultiplexing ?? true;
-
-            return (keepaliveCadence, useMultiplexing);
+            return new MySqlDistributedLockOptions(
+                keepaliveCadence: options?._keepaliveCadence ?? TimeSpan.FromHours(3.5),
+                useMultiplexing: options?._useMultiplexing ?? true,
+                useInstrumentation: options?._useInstrumentation ?? false
+            );
         }
+    }
+
+    internal readonly struct MySqlDistributedLockOptions
+    {
+        public MySqlDistributedLockOptions(
+            TimeoutValue keepaliveCadence,
+            bool useMultiplexing,
+            bool useInstrumentation)
+        {
+            this.KeepaliveCadence = keepaliveCadence;
+            this.UseMultiplexing = useMultiplexing;
+            this.UseInstrumentation = useInstrumentation;
+        }
+
+        public TimeoutValue KeepaliveCadence { get; }
+        public bool UseMultiplexing { get; }
+        public bool UseInstrumentation { get; }
     }
 }

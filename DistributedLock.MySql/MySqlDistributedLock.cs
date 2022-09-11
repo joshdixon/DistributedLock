@@ -21,6 +21,7 @@ namespace Medallion.Threading.MySql
         internal const int MaxNameLength = 64;
 
         private readonly IDbDistributedLock _internalLock;
+        private readonly MySqlDistributedLockOptions _options;
 
         /// <summary>
         /// Constructs a lock with the given <paramref name="name"/> that connects using the provided <paramref name="connectionString"/> and
@@ -29,7 +30,7 @@ namespace Medallion.Threading.MySql
         /// Unless <paramref name="exactName"/> is specified, <paramref name="name"/> will be escaped/hashed to ensure name validity.
         /// </summary>
         public MySqlDistributedLock(string name, string connectionString, Action<MySqlConnectionOptionsBuilder>? options = null, bool exactName = false)
-            : this(name, exactName, n => CreateInternalLock(n, connectionString, options))
+            : this(name, exactName, (n, o) => CreateInternalLock(n, connectionString, o), options)
         {
         }
 
@@ -39,7 +40,7 @@ namespace Medallion.Threading.MySql
         /// Unless <paramref name="exactName"/> is specified, <paramref name="name"/> will be escaped/hashed to ensure name validity.
         /// </summary>
         public MySqlDistributedLock(string name, IDbConnection connection, bool exactName = false)
-            : this(name, exactName, n => CreateInternalLock(n, connection))
+            : this(name, exactName, (n, o) => CreateInternalLock(n, connection))
         {
         }
 
@@ -52,11 +53,11 @@ namespace Medallion.Threading.MySql
         /// Unless <paramref name="exactName"/> is specified, <paramref name="name"/> will be escaped/hashed to ensure name validity.
         /// </summary>
         public MySqlDistributedLock(string name, IDbTransaction transaction, bool exactName = false)
-            : this(name, exactName, n => CreateInternalLock(n, transaction))
+            : this(name, exactName, (n, o) => CreateInternalLock(n, transaction))
         {
         }
 
-        private MySqlDistributedLock(string name, bool exactName, Func<string, IDbDistributedLock> internalLockFactory)
+        private MySqlDistributedLock(string name, bool exactName, Func<string, MySqlDistributedLockOptions, IDbDistributedLock> internalLockFactory, Action<MySqlConnectionOptionsBuilder>? options = null)
         {
             if (name == null) { throw new ArgumentNullException(nameof(name)); }
 
@@ -72,7 +73,8 @@ namespace Medallion.Threading.MySql
                 this.Name = GetSafeName(name);
             }
 
-            this._internalLock = internalLockFactory(this.Name);
+            this._options = MySqlConnectionOptionsBuilder.GetOptions(options);
+            this._internalLock = internalLockFactory(this.Name, this._options);
         }
 
         /// <summary>
@@ -81,7 +83,9 @@ namespace Medallion.Threading.MySql
         public string Name { get; }
 
         ValueTask<MySqlDistributedLockHandle?> IInternalDistributedLock<MySqlDistributedLockHandle>.InternalTryAcquireAsync(TimeoutValue timeout, CancellationToken cancellationToken) =>
-            this._internalLock.TryAcquireAsync(timeout, new MySqlUserLock(), cancellationToken, contextHandle: null).Wrap(h => new MySqlDistributedLockHandle(h));
+            this._internalLock.TryAcquireAsync(timeout, new MySqlUserLock(), cancellationToken, contextHandle: null)
+                .Instrument(this._options.UseInstrumentation, @lock: this, timeout, cancellationToken)
+                .Wrap(h => new MySqlDistributedLockHandle(h));
 
         private static string GetSafeName(string name) =>
             ToSafeName(
@@ -150,18 +154,16 @@ namespace Medallion.Threading.MySql
             return new string(chars);
         }
 
-        private static IDbDistributedLock CreateInternalLock(string name, string connectionString, Action<MySqlConnectionOptionsBuilder>? options)
+        private static IDbDistributedLock CreateInternalLock(string name, string connectionString, MySqlDistributedLockOptions options)
         {
             if (connectionString == null) { throw new ArgumentNullException(nameof(connectionString)); }
 
-            var (keepaliveCadence, useMultiplexing) = MySqlConnectionOptionsBuilder.GetOptions(options);
-
-            if (useMultiplexing)
+            if (options.UseMultiplexing)
             {
-                return new OptimisticConnectionMultiplexingDbDistributedLock(name, connectionString, MySqlMultiplexedConnectionLockPool.Instance, keepaliveCadence);
+                return new OptimisticConnectionMultiplexingDbDistributedLock(name, connectionString, MySqlMultiplexedConnectionLockPool.Instance, options.KeepaliveCadence);
             }
 
-            return new DedicatedConnectionOrTransactionDbDistributedLock(name, () => new MySqlDatabaseConnection(connectionString), useTransaction: false, keepaliveCadence);
+            return new DedicatedConnectionOrTransactionDbDistributedLock(name, () => new MySqlDatabaseConnection(connectionString), useTransaction: false, options.KeepaliveCadence);
         }
 
         private static IDbDistributedLock CreateInternalLock(string name, IDbConnection connection)

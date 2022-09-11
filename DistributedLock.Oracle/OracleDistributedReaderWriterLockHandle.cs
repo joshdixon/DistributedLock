@@ -51,11 +51,13 @@ namespace Medallion.Threading.Oracle
     /// </summary>
     public sealed class OracleDistributedReaderWriterLockUpgradeableHandle : OracleDistributedReaderWriterLockHandle, IInternalDistributedLockUpgradeableHandle
     {
-        private RefBox<(IDistributedSynchronizationHandle innerHandle, IDbDistributedLock @lock, IDistributedSynchronizationHandle? upgradedHandle)>? _box;
+        private RefBox<(IDistributedSynchronizationHandle innerHandle, IDbDistributedLock internalLock, IDistributedReaderWriterLock @lock, IDistributedSynchronizationHandle? upgradedHandle)>? _box;
+        private readonly bool _useInstrumentation;
 
-        internal OracleDistributedReaderWriterLockUpgradeableHandle(IDistributedSynchronizationHandle innerHandle, IDbDistributedLock @lock)
+        internal OracleDistributedReaderWriterLockUpgradeableHandle(IDistributedSynchronizationHandle innerHandle, IDbDistributedLock internalLock, IDistributedReaderWriterLock @lock, bool useInstrumentation)
         {
-            this._box = RefBox.Create((innerHandle, @lock, default(IDistributedSynchronizationHandle?)));
+            this._box = RefBox.Create((innerHandle, internalLock, @lock, default(IDistributedSynchronizationHandle?)));
+            this._useInstrumentation = useInstrumentation;
         }
 
         /// <summary>
@@ -108,8 +110,10 @@ namespace Medallion.Threading.Oracle
 
             async ValueTask<bool> TryPerformUpgradeAsync()
             {
-                var upgradedHandle =
-                    await contents.@lock.TryAcquireAsync(timeout, OracleDbmsLock.UpgradeLock, cancellationToken, contextHandle: contents.innerHandle).ConfigureAwait(false);
+                var upgradedHandle = await contents.internalLock
+                    .TryAcquireAsync(timeout, OracleDbmsLock.UpgradeLock, cancellationToken, contextHandle: contents.innerHandle)
+                    .Instrument(this._useInstrumentation, @lock: contents.@lock, Instrumentation.ReaderWriterLockLevel.Upgrade, timeout, cancellationToken)
+                    .ConfigureAwait(false);
                 if (upgradedHandle == null)
                 {
                     return false;

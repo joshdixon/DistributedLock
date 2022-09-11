@@ -9,10 +9,11 @@ namespace Medallion.Threading.Postgres
     /// <summary>
     /// Specifies options for connecting to and locking against a Postgres database
     /// </summary>
-    public sealed class PostgresConnectionOptionsBuilder
+    public sealed class PostgresConnectionOptionsBuilder : IInternalInstrumentationOptionsBuilder<PostgresConnectionOptionsBuilder>
     {
         private TimeoutValue? _keepaliveCadence;
         private bool? _useMultiplexing;
+        private bool? _useInstrumentation;
 
         internal PostgresConnectionOptionsBuilder() { }
 
@@ -52,7 +53,14 @@ namespace Medallion.Threading.Postgres
             return this;
         }
 
-        internal static (TimeoutValue keepaliveCadence, bool useMultiplexing) GetOptions(Action<PostgresConnectionOptionsBuilder>? optionsBuilder)
+        /// <inheritdoc />
+        public PostgresConnectionOptionsBuilder UseInstrumentation(bool useInstrumentation = true)
+        {
+            this._useInstrumentation = useInstrumentation;
+            return this;
+        }
+
+        internal static PostgresDistributedLockOptions GetOptions(Action<PostgresConnectionOptionsBuilder>? optionsBuilder)
         {
             PostgresConnectionOptionsBuilder? options;
             if (optionsBuilder != null)
@@ -65,10 +73,28 @@ namespace Medallion.Threading.Postgres
                 options = null;
             }
 
-            var keepaliveCadence = options?._keepaliveCadence ?? Timeout.InfiniteTimeSpan;
-            var useMultiplexing = options?._useMultiplexing ?? true;
-
-            return (keepaliveCadence, useMultiplexing);
+            return new PostgresDistributedLockOptions(
+                keepaliveCadence: options?._keepaliveCadence ?? Timeout.InfiniteTimeSpan,
+                useMultiplexing: options?._useMultiplexing ?? true,
+                useInstrumentation: options?._useInstrumentation ?? false
+            );
         }
+    }
+
+    internal readonly struct PostgresDistributedLockOptions
+    {
+        public PostgresDistributedLockOptions(
+            TimeoutValue keepaliveCadence,
+            bool useMultiplexing,
+            bool useInstrumentation)
+        {
+            this.KeepaliveCadence = keepaliveCadence;
+            this.UseMultiplexing = useMultiplexing;
+            this.UseInstrumentation = useInstrumentation;
+        }
+
+        public TimeoutValue KeepaliveCadence { get; }
+        public bool UseMultiplexing { get; }
+        public bool UseInstrumentation { get; }
     }
 }

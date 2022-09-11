@@ -14,6 +14,7 @@ namespace Medallion.Threading.SqlServer
     public sealed partial class SqlDistributedLock : IInternalDistributedLock<SqlDistributedLockHandle>
     {
         private readonly IDbDistributedLock _internalLock;
+        private readonly SqlDistributedLockOptions _options;
 
         /// <summary>
         /// Constructs a new lock using the provided <paramref name="name"/>. 
@@ -23,7 +24,7 @@ namespace Medallion.Threading.SqlServer
         /// Unless <paramref name="exactName"/> is specified, <paramref name="name"/> will be escaped/hashed to ensure name validity.
         /// </summary>
         public SqlDistributedLock(string name, string connectionString, Action<SqlConnectionOptionsBuilder>? options = null, bool exactName = false)
-            : this(name, exactName, n => CreateInternalLock(n, connectionString, options))
+            : this(name, exactName, (n, o) => CreateInternalLock(n, connectionString, o), options)
         {
         }
 
@@ -36,7 +37,7 @@ namespace Medallion.Threading.SqlServer
         /// Unless <paramref name="exactName"/> is specified, <paramref name="name"/> will be escaped/hashed to ensure name validity.
         /// </summary>
         public SqlDistributedLock(string name, IDbConnection connection, bool exactName = false)
-            : this(name, exactName, n => CreateInternalLock(n, connection))
+            : this(name, exactName, (n, o) => CreateInternalLock(n, connection))
         {
         }
 
@@ -49,11 +50,11 @@ namespace Medallion.Threading.SqlServer
         /// Unless <paramref name="exactName"/> is specified, <paramref name="name"/> will be escaped/hashed to ensure name validity.
         /// </summary>
         public SqlDistributedLock(string name, IDbTransaction transaction, bool exactName = false)
-            : this(name, exactName, n => CreateInternalLock(n, transaction))
+            : this(name, exactName, (n, o) => CreateInternalLock(n, transaction))
         {
         }
 
-        private SqlDistributedLock(string name, bool exactName, Func<string, IDbDistributedLock> internalLockFactory)
+        private SqlDistributedLock(string name, bool exactName, Func<string, SqlDistributedLockOptions, IDbDistributedLock> internalLockFactory, Action<SqlConnectionOptionsBuilder>? optionsBuilder = null)
         {
             if (exactName)
             {
@@ -66,7 +67,8 @@ namespace Medallion.Threading.SqlServer
                 this.Name = GetSafeName(name);
             }
 
-            this._internalLock = internalLockFactory(this.Name);
+            this._options = SqlConnectionOptionsBuilder.GetOptions(optionsBuilder);
+            this._internalLock = internalLockFactory(this.Name, this._options);
         }
 
         /// <summary>
@@ -83,20 +85,20 @@ namespace Medallion.Threading.SqlServer
             DistributedLockHelpers.ToSafeName(name, MaxNameLength, s => s);
 
         ValueTask<SqlDistributedLockHandle?> IInternalDistributedLock<SqlDistributedLockHandle>.InternalTryAcquireAsync(TimeoutValue timeout, CancellationToken cancellationToken) =>
-            this._internalLock.TryAcquireAsync(timeout, SqlApplicationLock.ExclusiveLock, cancellationToken, contextHandle: null).Wrap(h => new SqlDistributedLockHandle(h));
+            this._internalLock.TryAcquireAsync(timeout, SqlApplicationLock.ExclusiveLock, cancellationToken, contextHandle: null)
+            .Instrument(this._options.UseInstrumentation, @lock: this, timeout, cancellationToken)
+            .Wrap(h => new SqlDistributedLockHandle(h));
 
-        internal static IDbDistributedLock CreateInternalLock(string name, string connectionString, Action<SqlConnectionOptionsBuilder>? optionsBuilder)
+        internal static IDbDistributedLock CreateInternalLock(string name, string connectionString, SqlDistributedLockOptions options)
         {
             if (connectionString == null) { throw new ArgumentNullException(nameof(connectionString)); }
 
-            var (keepaliveCadence, useTransaction, useMultiplexing) = SqlConnectionOptionsBuilder.GetOptions(optionsBuilder);
-
-            if (useMultiplexing)
+            if (options.UseMultiplexing)
             {
-                return new OptimisticConnectionMultiplexingDbDistributedLock(name, connectionString, SqlMultiplexedConnectionLockPool.Instance, keepaliveCadence);
+                return new OptimisticConnectionMultiplexingDbDistributedLock(name, connectionString, SqlMultiplexedConnectionLockPool.Instance, options.KeepaliveCadence);
             }
 
-            return new DedicatedConnectionOrTransactionDbDistributedLock(name, () => new SqlDatabaseConnection(connectionString), useTransaction: useTransaction, keepaliveCadence);
+            return new DedicatedConnectionOrTransactionDbDistributedLock(name, () => new SqlDatabaseConnection(connectionString), useTransaction: options.UseTransaction, options.KeepaliveCadence);
         }
 
         internal static IDbDistributedLock CreateInternalLock(string name, IDbConnection connection)

@@ -41,7 +41,7 @@ namespace Medallion.Threading.Postgres
         /// </summary>
         public PostgresDistributedLock CreateLock(PostgresAdvisoryLockKey key) => this._lockFactory(key);
 
-        IDistributedLock IDistributedLockProvider.CreateLock(string name) => 
+        IDistributedLock IDistributedLockProvider.CreateLock(string name) =>
             this.CreateLock(new PostgresAdvisoryLockKey(name, allowHashing: true));
 
         /// <summary>

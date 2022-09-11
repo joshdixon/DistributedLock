@@ -14,6 +14,7 @@ namespace Medallion.Threading.SqlServer
     {
         private readonly IDbDistributedLock _internalLock;
         private readonly SqlSemaphore _strategy;
+        private readonly SqlDistributedLockOptions _options;
 
         #region ---- Constructors ----
         /// <summary>
@@ -21,7 +22,7 @@ namespace Medallion.Threading.SqlServer
         /// times concurrently. The provided <paramref name="connectionString"/> will be used to connect to the database.
         /// </summary>
         public SqlDistributedSemaphore(string name, int maxCount, string connectionString, Action<SqlConnectionOptionsBuilder>? options = null)
-            : this(name, maxCount, n => SqlDistributedLock.CreateInternalLock(n, connectionString, options))
+            : this(name, maxCount, (n, o) => SqlDistributedLock.CreateInternalLock(n, connectionString, o), options)
         {
         }
 
@@ -32,7 +33,7 @@ namespace Medallion.Threading.SqlServer
         /// not attempt to open, close, or dispose it
         /// </summary>
         public SqlDistributedSemaphore(string name, int maxCount, IDbConnection connection)
-            : this(name, maxCount, n => SqlDistributedLock.CreateInternalLock(n, connection))
+            : this(name, maxCount, (n, o) => SqlDistributedLock.CreateInternalLock(n, connection))
         {
         }
 
@@ -43,17 +44,18 @@ namespace Medallion.Threading.SqlServer
         /// the <see cref="SqlDistributedSemaphore"/> will not attempt to open, close, commit, roll back, or dispose them
         /// </summary>
         public SqlDistributedSemaphore(string name, int maxCount, IDbTransaction transaction)
-            : this(name, maxCount, n => SqlDistributedLock.CreateInternalLock(n, transaction))
+            : this(name, maxCount, (n, o) => SqlDistributedLock.CreateInternalLock(n, transaction))
         {
         }
 
-        private SqlDistributedSemaphore(string name, int maxCount, Func<string, IDbDistributedLock> createInternalLockFromName)
+        private SqlDistributedSemaphore(string name, int maxCount, Func<string, SqlDistributedLockOptions, IDbDistributedLock> internalLockFactory, Action<SqlConnectionOptionsBuilder>? optionsBuilder = null)
         {
             if (maxCount < 1) { throw new ArgumentOutOfRangeException(nameof(maxCount), maxCount, "must be positive"); }
 
             this.Name = name ?? throw new ArgumentNullException(nameof(name));
             this._strategy = new SqlSemaphore(maxCount);
-            this._internalLock = createInternalLockFromName(SqlSemaphore.ToSafeName(name));
+            this._options = SqlConnectionOptionsBuilder.GetOptions(optionsBuilder);
+            this._internalLock = internalLockFactory(SqlSemaphore.ToSafeName(name), this._options);
         }
         #endregion
 
@@ -67,10 +69,9 @@ namespace Medallion.Threading.SqlServer
         /// </summary>
         public int MaxCount => this._strategy.MaxCount;
 
-        async ValueTask<SqlDistributedSemaphoreHandle?> IInternalDistributedSemaphore<SqlDistributedSemaphoreHandle>.InternalTryAcquireAsync(TimeoutValue timeout, CancellationToken cancellationToken)
-        {
-            var handle = await this._internalLock.TryAcquireAsync(timeout, this._strategy, cancellationToken, contextHandle: null).ConfigureAwait(false);
-            return handle != null ? new SqlDistributedSemaphoreHandle(handle) : null;
-        }
+        ValueTask<SqlDistributedSemaphoreHandle?> IInternalDistributedSemaphore<SqlDistributedSemaphoreHandle>.InternalTryAcquireAsync(TimeoutValue timeout, CancellationToken cancellationToken) =>
+            this._internalLock.TryAcquireAsync(timeout, this._strategy, cancellationToken, contextHandle: null)
+                .Instrument(this._options.UseInstrumentation, semaphore: this, timeout, cancellationToken)
+                .Wrap(h => new SqlDistributedSemaphoreHandle(h));
     }
 }
